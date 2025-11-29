@@ -1,14 +1,14 @@
 [project]
-name = "ComfyUI-Rife-Tensorrt"
-description = "Ultra fast frame interpolation using RIFE with TensorRT inside ComfyUI"
+name = "ComfyUI_RIFE_TensorRT_Auto"
+description = "Ultra fast frame interpolation using RIFE with TensorRT with Automatic downloading"
 version = "1.0.0"
 license = { file = "LICENSE" }
 
 [project.urls]
-Repository = "https://github.com/silveroxides/ComfyUI-Rife-Tensorrt"
+Repository = "https://github.com/silveroxides/ComfyUI_RIFE_TensorRT_Auto"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
 PublisherId = "silveroxides"
-DisplayName = "ComfyUI-Rife-Tensorrt"
+DisplayName = "ComfyUI_RIFE_TensorRT_Auto"
 Icon = ""
