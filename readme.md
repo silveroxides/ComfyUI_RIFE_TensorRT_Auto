@@ -40,7 +40,21 @@ cd ./ComfyUI-Rife-Tensorrt
 pip install -r requirements.txt
 ```
 
-## 🛠️ Supported Models
+### ⚠️ Installation Issues (CUDA Versions)
+This node defaults to **CUDA 12** libraries (`requirements.txt`).
+If you are using **CUDA 13**, or if you experience dependency errors, please install the specific requirements file for your system:
+
+**For CUDA 13:**
+```bash
+pip install -r requirements_cu13.txt
+```
+
+**For CUDA 12 (Default):**
+```bash
+pip install -r requirements.txt
+```
+
+This ensures the correct `tensorrt-libs` and `tensorrt-bindings` are installed to match your system.
 
 The following RIFE models are supported and will be automatically downloaded and built:
    - **rife49_ensemble_True_scale_1_sim** (default) - Latest and most accurate
