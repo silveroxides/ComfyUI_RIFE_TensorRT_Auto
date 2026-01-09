@@ -1,0 +1,12 @@
+# Legacy: CUDA 12 (RTX 30/40 series, CUDA 12.x)
+# For CUDA 13, use requirements.txt instead
+tensorrt-cu12==10.13.3.9
+tensorrt-cu12-libs==10.13.3.9
+tensorrt-cu12-bindings==10.13.3.9
+cuda-toolkit>=12.8.0,<13.0.0
+einops
+colored
+polygraphy
+cuda-python
+requests
+tqdm
