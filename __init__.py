@@ -1,11 +1,56 @@
 import torch
 import os
+import sys
+from pathlib import Path
 from comfy.model_management import get_torch_device
 from .vfi_utilities import preprocess_frames, postprocess_frames, generate_frames_rife, logger
 from .trt_utilities import Engine
 from .utilities import download_file, ColoredLogger
 import folder_paths
 import time
+
+# Auto-detect CUDA toolkit and add DLL path before importing polygraphy
+def _setup_cuda_dll_path():
+    """Auto-detect CUDA toolkit and add cudart64 DLL path on Windows."""
+    if not sys.platform.startswith("win"):
+        return
+    
+    cuda_root = None
+    
+    # Check for CUDA_PATH or CUDA_HOME environment variables
+    cuda_root = os.environ.get("CUDA_PATH") or os.environ.get("CUDA_HOME")
+    
+    if not cuda_root:
+        # Try default Windows install location
+        program_files = os.environ.get("PROGRAMFILES")
+        if program_files:
+            cuda_base = Path(program_files) / "NVIDIA GPU Computing Toolkit" / "CUDA"
+            if cuda_base.exists():
+                # Find highest version directory
+                versions = sorted([d for d in cuda_base.iterdir() if d.is_dir()], reverse=True)
+                if versions:
+                    cuda_root = str(versions[0])
+    
+    if cuda_root:
+        cuda_path = Path(cuda_root)
+        # CUDA 13.0+ puts cudart64 in bin/x64 subdirectory
+        cuda_bin_x64 = cuda_path / "bin" / "x64"
+        if cuda_bin_x64.exists() and any(cuda_bin_x64.glob("cudart64*.dll")):
+            os.add_dll_directory(str(cuda_bin_x64))
+            return
+        # Fallback to regular bin directory for older CUDA versions
+        cuda_bin = cuda_path / "bin"
+        if cuda_bin.exists() and any(cuda_bin.glob("cudart64*.dll")):
+            os.add_dll_directory(str(cuda_bin))
+            return
+    
+    # CUDA toolkit not found - print warning with download link
+    print("[ComfyUI-Rife-TensorRT] WARNING: CUDA toolkit not found.")
+    print("    Set CUDA_PATH environment variable or install CUDA toolkit.")
+    print("    Download: https://developer.nvidia.com/cuda-13-0-2-download-archive")
+
+_setup_cuda_dll_path()
+
 from polygraphy import cuda
 import comfy.model_management as mm
 import tensorrt
@@ -13,10 +58,11 @@ import json
 
 ENGINE_DIR = os.path.join(folder_paths.models_dir, "tensorrt", "rife")
 
-# Image dimensions for TensorRT engine building
-IMAGE_DIM_MIN = 256
-IMAGE_DIM_OPT = 512
-IMAGE_DIM_MAX = 3840
+# Default resolution profiles (fallback if config is missing)
+DEFAULT_RESOLUTION_PROFILES = {
+    "small": {"min": 480, "opt": 512, "max": 896},
+    "medium": {"min": 720, "opt": 1024, "max": 1280}
+}
 
 # Logger for this module
 rife_logger = ColoredLogger("ComfyUI-Rife-Tensorrt")
@@ -58,6 +104,34 @@ def load_node_config(config_filename="load_rife_config.json"):
 # Load the configuration once when the module is imported
 LOAD_RIFE_NODE_CONFIG = load_node_config()
 
+
+class CustomResolutionConfig:
+    """Node to configure custom resolution dimensions for TensorRT engine building."""
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "min_dim": ("INT", {"default": 480, "min": 64, "max": 4096, "step": 8, "tooltip": "Minimum resolution dimension"}),
+                "opt_dim": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 8, "tooltip": "Optimal resolution dimension (most common)"}),
+                "max_dim": ("INT", {"default": 896, "min": 64, "max": 4096, "step": 8, "tooltip": "Maximum resolution dimension"}),
+            }
+        }
+
+    RETURN_TYPES = ("RIFE_RESOLUTION_CONFIG",)
+    RETURN_NAMES = ("resolution_config",)
+    FUNCTION = "configure"
+    CATEGORY = "tensorrt"
+    DESCRIPTION = "Configure custom resolution dimensions for RIFE TensorRT engine."
+
+    def configure(self, min_dim, opt_dim, max_dim):
+        config = {
+            "min": min_dim,
+            "opt": opt_dim,
+            "max": max_dim,
+        }
+        return (config,)
+
+
 class AutoLoadRifeTensorrtModel:
     @classmethod
     def INPUT_TYPES(cls):
@@ -74,10 +148,23 @@ class AutoLoadRifeTensorrtModel:
         precision_default = precision_config.get("default", "fp16")
         precision_tooltip = precision_config.get("tooltip", "Select precision.")
 
+        # Resolution profile configuration
+        profile_config = LOAD_RIFE_NODE_CONFIG.get("resolution_profile", {})
+        profile_options = profile_config.get("options", ["small", "medium"])
+        # Ensure 'custom' is always available
+        if "custom" not in profile_options:
+            profile_options = profile_options + ["custom"]
+        profile_default = profile_config.get("default", "small")
+        profile_tooltip = profile_config.get("tooltip", "Resolution range for TensorRT engine. Use 'custom' with the INT inputs below.")
+
         return {
             "required": {
                 "model": (model_options, {"default": model_default, "tooltip": model_tooltip}),
                 "precision": (precision_options, {"default": precision_default, "tooltip": precision_tooltip}),
+                "resolution_profile": (profile_options, {"default": profile_default, "tooltip": profile_tooltip}),
+            },
+            "optional": {
+                "custom_config": ("RIFE_RESOLUTION_CONFIG", {"tooltip": "Custom resolution config (used when profile='custom')"}),
             }
         }
 
@@ -87,7 +174,7 @@ class AutoLoadRifeTensorrtModel:
     DESCRIPTION = "Load RIFE tensorrt models, they will be built automatically if not found."
     FUNCTION = "load_rife_tensorrt_model"
 
-    def load_rife_tensorrt_model(self, model, precision):
+    def load_rife_tensorrt_model(self, model, precision, resolution_profile, custom_config=None):
         tensorrt_models_dir = os.path.join(folder_paths.models_dir, "tensorrt", "rife")
         onnx_models_dir = os.path.join(folder_paths.models_dir, "onnx")
 
@@ -96,12 +183,32 @@ class AutoLoadRifeTensorrtModel:
 
         onnx_model_path = os.path.join(onnx_models_dir, f"{model}.onnx")
 
-        # Build tensorrt model path with detailed naming
+        # Get resolution dimensions based on profile
+        if resolution_profile == "custom":
+            if custom_config is None:
+                rife_logger.warning("Custom profile selected but no custom_config provided. Using defaults.")
+                dim_min, dim_opt, dim_max = 480, 512, 896
+            else:
+                dim_min = custom_config.get("min", 480)
+                dim_opt = custom_config.get("opt", 512)
+                dim_max = custom_config.get("max", 896)
+            # Use dimensions in profile name for custom engines
+            profile_name = f"custom_{dim_min}_{dim_opt}_{dim_max}"
+        else:
+            profiles = LOAD_RIFE_NODE_CONFIG.get("resolution_profiles", DEFAULT_RESOLUTION_PROFILES)
+            profile = profiles.get(resolution_profile, DEFAULT_RESOLUTION_PROFILES["small"])
+            dim_min = profile.get("min", 480)
+            dim_opt = profile.get("opt", 512)
+            dim_max = profile.get("max", 896)
+            profile_name = resolution_profile
+        rife_logger.info(f"Using resolution profile '{profile_name}': min={dim_min}, opt={dim_opt}, max={dim_max}")
+
+        # Build tensorrt model path with detailed naming (includes profile)
         engine_channel = 3
         engine_min_batch, engine_opt_batch, engine_max_batch = 1, 1, 1
-        engine_min_h, engine_opt_h, engine_max_h = IMAGE_DIM_MIN, IMAGE_DIM_OPT, IMAGE_DIM_MAX
-        engine_min_w, engine_opt_w, engine_max_w = IMAGE_DIM_MIN, IMAGE_DIM_OPT, IMAGE_DIM_MAX
-        tensorrt_model_path = os.path.join(tensorrt_models_dir, f"{model}_{precision}_{engine_min_batch}x{engine_channel}x{engine_min_h}x{engine_min_w}_{engine_opt_batch}x{engine_channel}x{engine_opt_h}x{engine_opt_w}_{engine_max_batch}x{engine_channel}x{engine_max_h}x{engine_max_w}_{tensorrt.__version__}.trt")
+        engine_min_h, engine_opt_h, engine_max_h = dim_min, dim_opt, dim_max
+        engine_min_w, engine_opt_w, engine_max_w = dim_min, dim_opt, dim_max
+        tensorrt_model_path = os.path.join(tensorrt_models_dir, f"{model}_{precision}_{profile_name}_{engine_min_batch}x{engine_channel}x{engine_min_h}x{engine_min_w}_{engine_opt_batch}x{engine_channel}x{engine_opt_h}x{engine_opt_w}_{engine_max_batch}x{engine_channel}x{engine_max_h}x{engine_max_w}_{tensorrt.__version__}.trt")
 
         if not os.path.exists(tensorrt_model_path):
             if not os.path.exists(onnx_model_path):
@@ -204,11 +311,13 @@ class AutoRifeTensorrt:
 NODE_CLASS_MAPPINGS = {
     "AutoRifeTensorrt": AutoRifeTensorrt,
     "AutoLoadRifeTensorrtModel": AutoLoadRifeTensorrtModel,
+    "CustomResolutionConfig": CustomResolutionConfig,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "AutoRifeTensorrt": "Auto RIFE TensorRT",
     "AutoLoadRifeTensorrtModel": "(Down)load RIFE TensorRT Model",
+    "CustomResolutionConfig": "RIFE Custom Resolution Config",
 }
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']

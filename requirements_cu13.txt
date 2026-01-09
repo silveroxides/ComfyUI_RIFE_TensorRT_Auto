@@ -1,9 +1,0 @@
-tensorrt-cu13==10.13.3.9
-tensorrt-cu13-libs==10.13.3.9
-tensorrt-cu13-bindings==10.13.3.9
-einops
-colored
-polygraphy
-cuda-python
-requests
-tqdm
