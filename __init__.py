@@ -60,8 +60,8 @@ ENGINE_DIR = os.path.join(folder_paths.models_dir, "tensorrt", "rife")
 
 # Default resolution profiles (fallback if config is missing)
 DEFAULT_RESOLUTION_PROFILES = {
-    "small": {"min": 480, "opt": 512, "max": 896},
-    "medium": {"min": 720, "opt": 1024, "max": 1280}
+    "small": {"min": 384, "opt": 720, "max": 1080},
+    "medium": {"min": 672, "opt": 1080, "max": 1312}
 }
 
 # Logger for this module
@@ -111,9 +111,9 @@ class CustomResolutionConfig:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "min_dim": ("INT", {"default": 480, "min": 64, "max": 4096, "step": 8, "tooltip": "Minimum resolution dimension"}),
-                "opt_dim": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 8, "tooltip": "Optimal resolution dimension (most common)"}),
-                "max_dim": ("INT", {"default": 896, "min": 64, "max": 4096, "step": 8, "tooltip": "Maximum resolution dimension"}),
+                "min_dim": ("INT", {"default": 384, "min": 64, "max": 4096, "step": 8, "tooltip": "Minimum resolution dimension"}),
+                "opt_dim": ("INT", {"default": 720, "min": 64, "max": 4096, "step": 8, "tooltip": "Optimal resolution dimension (most common)"}),
+                "max_dim": ("INT", {"default": 1312, "min": 64, "max": 4096, "step": 8, "tooltip": "Maximum resolution dimension"}),
             }
         }
 
@@ -186,20 +186,20 @@ class AutoLoadRifeTensorrtModel:
         # Get resolution dimensions based on profile
         if resolution_profile == "custom":
             if custom_config is None:
-                rife_logger.warning("Custom profile selected but no custom_config provided. Using defaults.")
-                dim_min, dim_opt, dim_max = 480, 512, 896
+                rife_logger.warning("Custom profile selected but no custom_config provided. Using defaults that cover both small and medium ranges.")
+                dim_min, dim_opt, dim_max = 384, 720, 1312
             else:
-                dim_min = custom_config.get("min", 480)
-                dim_opt = custom_config.get("opt", 512)
-                dim_max = custom_config.get("max", 896)
+                dim_min = custom_config.get("min", 384)
+                dim_opt = custom_config.get("opt", 720)
+                dim_max = custom_config.get("max", 1312)
             # Use dimensions in profile name for custom engines
             profile_name = f"custom_{dim_min}_{dim_opt}_{dim_max}"
         else:
             profiles = LOAD_RIFE_NODE_CONFIG.get("resolution_profiles", DEFAULT_RESOLUTION_PROFILES)
             profile = profiles.get(resolution_profile, DEFAULT_RESOLUTION_PROFILES["small"])
-            dim_min = profile.get("min", 480)
-            dim_opt = profile.get("opt", 512)
-            dim_max = profile.get("max", 896)
+            dim_min = profile.get("min", 384)
+            dim_opt = profile.get("opt", 720)
+            dim_max = profile.get("max", 1080)
             profile_name = resolution_profile
         rife_logger.info(f"Using resolution profile '{profile_name}': min={dim_min}, opt={dim_opt}, max={dim_max}")
 
